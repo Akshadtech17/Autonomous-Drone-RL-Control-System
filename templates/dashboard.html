@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>🚁 AI Drone Control Center</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body style="background:#111;color:white;text-align:center;">
+
+<h1>🚁 Autonomous Drone AI Control Center</h1>
+
+<button onclick="start()">Start Training</button>
+
+<h3>Episode: <span id="ep">0</span></h3>
+<h3>Reward: <span id="rew">0</span></h3>
+<h3>Length: <span id="len">0</span></h3>
+
+<canvas id="chart" width="600" height="300"></canvas>
+
+<script>
+const socket = io();
+
+let episodes = [];
+let rewards = [];
+
+const ctx = document.getElementById("chart").getContext("2d");
+
+const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+        labels: episodes,
+        datasets: [{
+            label: "Reward",
+            data: rewards,
+            borderColor: "lime",
+            fill: false
+        }]
+    }
+});
+
+socket.on("update", function(data) {
+    document.getElementById("ep").innerText = data.episode;
+    document.getElementById("rew").innerText = data.reward;
+    document.getElementById("len").innerText = data.length;
+
+    episodes.push(data.episode);
+    rewards.push(data.reward);
+
+    chart.update();
+});
+
+function start() {
+    fetch("/start");
+}
+</script>
+
+</body>
+</html>
