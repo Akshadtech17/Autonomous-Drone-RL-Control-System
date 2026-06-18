@@ -166,6 +166,60 @@ def _run_advanced_sim(model_path: str) -> None:
     env.close()
 
 
+def _run_random_sim():
+    """Fallback simulation using a random policy — no model file needed."""
+    import random
+    GRID = 10
+    obstacles = [(random.randint(1,8), random.randint(1,8)) for _ in range(8)]
+    goal = [random.randint(1,8), random.randint(1,8)]
+    drone = [random.randint(0,9), random.randint(0,9)]
+    episode, step, ep_reward = 1, 0, 0.0
+    stuck = 0
+    prev = list(drone)
+
+    while not _sim_stop.is_set():
+        action = random.randint(0, 3)
+        dx, dy = [(0,-1),(0,1),(-1,0),(1,0)][action]
+        nx, ny = max(0,min(9,drone[0]+dx)), max(0,min(9,drone[1]+dy))
+        if (nx, ny) not in [(o[0],o[1]) for o in obstacles]:
+            drone = [nx, ny]
+        reward = -0.01
+        reached = drone == goal
+        if reached:
+            reward = 1.0
+            goal = [random.randint(1,8), random.randint(1,8)]
+        ep_reward += reward
+        step += 1
+        if drone == prev:
+            stuck += 1
+            if stuck > 3:
+                action = random.randint(0, 3)
+                stuck = 0
+        else:
+            stuck = 0
+        prev = list(drone)
+        if step >= 200 or reached:
+            episode += 1; step = 0; ep_reward = 0.0
+            drone = [random.randint(0,9), random.randint(0,9)]
+        frame = {
+            "drone": drone, "goal": goal,
+            "obstacles": obstacles,
+            "action": action, "reward": reward,
+            "episode": episode, "step": step,
+            "goal_reached": reached,
+            "probs": {"up":0.25,"down":0.25,"left":0.25,"right":0.25},
+            "demo_mode": True,
+        }
+        try:
+            _sim_queue.put_nowait(frame)
+        except queue.Full:
+            try: _sim_queue.get_nowait()
+            except queue.Empty: pass
+            try: _sim_queue.put_nowait(frame)
+            except queue.Full: pass
+        time.sleep(0.12)
+
+
 def _run_browser_sim(model_path: str, use_lidar: bool):
     """
     Background thread: steps the env and pushes SSE frames to _sim_queue.
@@ -1159,9 +1213,6 @@ def simulate_start():
 
     model_path = _best_model_path(use_lidar)
 
-    if not model_path:
-        return jsonify({"error": "No model found. Train first."}), 404
-
     # stop any existing sim
     _sim_stop.set()
     if _sim_thread and _sim_thread.is_alive():
@@ -1171,11 +1222,15 @@ def simulate_start():
         except queue.Empty: break
 
     _sim_stop.clear()
-    _sim_thread = threading.Thread(
-        target=_run_browser_sim,
-        args=(model_path, use_lidar),
-        daemon=True,
-    )
+    if model_path:
+        _sim_thread = threading.Thread(
+            target=_run_browser_sim,
+            args=(model_path, use_lidar),
+            daemon=True,
+        )
+    else:
+        # No trained model on server — run random-policy demo so the UI still works
+        _sim_thread = threading.Thread(target=_run_random_sim, daemon=True)
     _sim_thread.start()
 
     def generate():
