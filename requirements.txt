@@ -12,9 +12,8 @@ flask-cors==6.0.5
 gunicorn==23.0.0
 gevent==24.11.1
 
-# Visualization
+# Visualization (pygame omitted — desktop-only, not needed for web server)
 matplotlib==3.11.0
-pygame==2.6.1
 pandas==3.0.3
 pillow==12.2.0
 
