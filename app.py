@@ -220,6 +220,177 @@ def _run_random_sim():
         time.sleep(0.12)
 
 
+def _run_random_lidar_sim():
+    """Fallback LIDAR sim — grid world with 8-direction raycasting, no model needed."""
+    import random, math
+    GRID = 10
+    N_RAYS = 8
+    obs_set = set()
+    while len(obs_set) < 8:
+        obs_set.add((random.randint(1, 8), random.randint(1, 8)))
+    obstacles = list(obs_set)
+    goal   = [random.randint(1, 8), random.randint(1, 8)]
+    drone  = [random.randint(0, 9), random.randint(0, 9)]
+    episode, step = 1, 0
+    prev = list(drone)
+    stuck = 0
+
+    def cast_rays(pos):
+        rays = []
+        for i in range(N_RAYS):
+            angle = i * 2 * math.pi / N_RAYS
+            rdx, rdy = math.cos(angle), math.sin(angle)
+            for d in [x * 0.25 for x in range(1, GRID * 4 + 1)]:
+                rx, ry = pos[0] + rdx * d, pos[1] + rdy * d
+                if not (0 <= rx < GRID and 0 <= ry < GRID):
+                    rays.append([max(0, min(9, rx)), max(0, min(9, ry))])
+                    break
+                if (int(rx), int(ry)) in obs_set:
+                    rays.append([rx, ry])
+                    break
+            else:
+                rays.append([pos[0] + rdx * (GRID - 1), pos[1] + rdy * (GRID - 1)])
+        return rays
+
+    while not _sim_stop.is_set():
+        action = random.randint(0, 3)
+        dx, dy = [(0, -1), (0, 1), (-1, 0), (1, 0)][action]
+        nx, ny = max(0, min(9, drone[0] + dx)), max(0, min(9, drone[1] + dy))
+        if (nx, ny) not in obs_set:
+            drone = [nx, ny]
+        if drone == prev:
+            stuck += 1
+            if stuck > 3: stuck = 0; action = random.randint(0, 3)
+        else:
+            stuck = 0
+        prev = list(drone)
+        reached = (drone == goal)
+        reward  = 1.0 if reached else -0.01
+        if reached:
+            goal = [random.randint(1, 8), random.randint(1, 8)]
+        step += 1
+        if step >= 200 or reached:
+            episode += 1; step = 0
+            drone = [random.randint(0, 9), random.randint(0, 9)]
+        frame = {
+            "drone": drone, "goal": goal,
+            "obstacles": obstacles,
+            "rays": cast_rays(drone),
+            "action": action, "reward": reward,
+            "episode": episode, "step": step,
+            "goal_reached": reached, "demo_mode": True,
+        }
+        try: _sim_queue.put_nowait(frame)
+        except queue.Full:
+            try: _sim_queue.get_nowait()
+            except queue.Empty: pass
+            try: _sim_queue.put_nowait(frame)
+            except queue.Full: pass
+        time.sleep(0.10)
+
+
+def _run_random_advanced_sim():
+    """Fallback advanced sim — continuous 20×20 world, 64-beam LIDAR, no model needed."""
+    import random, math
+    GS       = 20.0
+    N_BEAMS  = 64
+    MAX_DIST = GS * math.sqrt(2)
+
+    def rp(): return [random.uniform(2, GS - 2), random.uniform(2, GS - 2)]
+
+    drone = rp(); goal = rp(); vel = [0.0, 0.0]
+    obstacles = [
+        {"x": random.uniform(2, GS-2), "y": random.uniform(2, GS-2),
+         "radius": random.uniform(0.5, 1.1),
+         "vx": random.uniform(-0.07, 0.07) if i < 3 else 0.0,
+         "vy": random.uniform(-0.07, 0.07) if i < 3 else 0.0}
+        for i in range(7)
+    ]
+    wind    = [random.gauss(0, 0.02), random.gauss(0, 0.02)]
+    energy  = 1.0
+    episode, step, ep_reward = 1, 0, 0.0
+
+    def lidar_scan(pos):
+        beams = []
+        for i in range(N_BEAMS):
+            angle = i * 2 * math.pi / N_BEAMS
+            rdx, rdy = math.cos(angle), math.sin(angle)
+            dist = MAX_DIST
+            # walls
+            if rdx > 1e-9:  dist = min(dist, (GS - pos[0]) / rdx)
+            elif rdx < -1e-9: dist = min(dist, -pos[0] / rdx)
+            if rdy > 1e-9:  dist = min(dist, (GS - pos[1]) / rdy)
+            elif rdy < -1e-9: dist = min(dist, -pos[1] / rdy)
+            # obstacles
+            for o in obstacles:
+                ox, oy = o["x"] - pos[0], o["y"] - pos[1]
+                proj = ox * rdx + oy * rdy
+                if proj > 0:
+                    perp2 = ox*ox + oy*oy - proj*proj
+                    r2 = o["radius"] ** 2
+                    if perp2 < r2:
+                        hit = proj - math.sqrt(max(0, r2 - perp2))
+                        if 0 < hit < dist: dist = hit
+            dist = max(0, dist)
+            beams.append([pos[0] + rdx * dist, pos[1] + rdy * dist])
+        return beams
+
+    while not _adv_stop.is_set():
+        # Simple seek-goal action with noise
+        gx, gy = goal[0] - drone[0], goal[1] - drone[1]
+        gm = math.sqrt(gx*gx + gy*gy) or 1.0
+        ax = (gx / gm) * 0.15 + random.gauss(0, 0.08)
+        ay = (gy / gm) * 0.15 + random.gauss(0, 0.08)
+        ax = max(-0.4, min(0.4, ax))
+        ay = max(-0.4, min(0.4, ay))
+
+        vel[0] = 0.75 * vel[0] + ax + wind[0]
+        vel[1] = 0.75 * vel[1] + ay + wind[1]
+        vel[0] = max(-0.5, min(0.5, vel[0]))
+        vel[1] = max(-0.5, min(0.5, vel[1]))
+        drone[0] = max(0.3, min(GS-0.3, drone[0] + vel[0]))
+        drone[1] = max(0.3, min(GS-0.3, drone[1] + vel[1]))
+
+        for o in obstacles:
+            o["x"] = max(0.5, min(GS-0.5, o["x"] + o["vx"]))
+            o["y"] = max(0.5, min(GS-0.5, o["y"] + o["vy"]))
+            if not (0.5 < o["x"] < GS-0.5): o["vx"] *= -1
+            if not (0.5 < o["y"] < GS-0.5): o["vy"] *= -1
+
+        wind[0] = max(-0.12, min(0.12, wind[0] + random.gauss(0, 0.004)))
+        wind[1] = max(-0.12, min(0.12, wind[1] + random.gauss(0, 0.004)))
+        energy  = max(0.0, energy - 0.0008)
+
+        dist_goal = math.sqrt((drone[0]-goal[0])**2 + (drone[1]-goal[1])**2)
+        reached   = dist_goal < 1.5
+        reward    = 1.0 if reached else -0.005
+        if reached or energy <= 0:
+            goal = rp(); energy = 1.0
+        ep_reward += reward; step += 1
+        if step >= 400 or reached:
+            episode += 1; step = 0; ep_reward = 0.0
+            drone = rp(); vel = [0.0, 0.0]; energy = 1.0
+
+        frame = {
+            "drone": drone[:], "goal": goal[:],
+            "obstacles": [dict(o) for o in obstacles],
+            "lidar": lidar_scan(drone),
+            "wind": wind[:], "energy": energy,
+            "motor_ok": [1, 1], "action": [ax, ay],
+            "reward": reward, "ep_reward": ep_reward,
+            "episode": episode, "step": step,
+            "goal_reached": reached, "grid_size": GS,
+            "algo": "DEMO", "demo_mode": True,
+        }
+        try: _adv_queue.put_nowait(frame)
+        except queue.Full:
+            try: _adv_queue.get_nowait()
+            except queue.Empty: pass
+            try: _adv_queue.put_nowait(frame)
+            except queue.Full: pass
+        time.sleep(0.065)
+
+
 def _run_browser_sim(model_path: str, use_lidar: bool):
     """
     Background thread: steps the env and pushes SSE frames to _sim_queue.
@@ -1224,12 +1395,10 @@ def simulate_start():
     _sim_stop.clear()
     if model_path:
         _sim_thread = threading.Thread(
-            target=_run_browser_sim,
-            args=(model_path, use_lidar),
-            daemon=True,
-        )
+            target=_run_browser_sim, args=(model_path, use_lidar), daemon=True)
+    elif use_lidar:
+        _sim_thread = threading.Thread(target=_run_random_lidar_sim, daemon=True)
     else:
-        # No trained model on server — run random-policy demo so the UI still works
         _sim_thread = threading.Thread(target=_run_random_sim, daemon=True)
     _sim_thread.start()
 
@@ -1471,8 +1640,6 @@ def simulate_advanced_start():
     """SSE stream for DroneEnvAdvanced canvas."""
     global _adv_thread
     model_path = _best_advanced_model_path()
-    if not model_path:
-        return jsonify({"error": "No advanced model found. Run: python train/run.py --train"}), 404
 
     _adv_stop.set()
     if _adv_thread and _adv_thread.is_alive():
@@ -1482,7 +1649,10 @@ def simulate_advanced_start():
         except queue.Empty: break
 
     _adv_stop.clear()
-    _adv_thread = threading.Thread(target=_run_advanced_sim, args=(model_path,), daemon=True)
+    if model_path:
+        _adv_thread = threading.Thread(target=_run_advanced_sim, args=(model_path,), daemon=True)
+    else:
+        _adv_thread = threading.Thread(target=_run_random_advanced_sim, daemon=True)
     _adv_thread.start()
 
     def generate():
