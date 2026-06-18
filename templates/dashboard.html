@@ -1,59 +1,348 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>🚁 AI Drone Control Center</title>
-    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="Autonomous Drone RL — Real-time mission control dashboard">
+<title>DRONE RL · MISSION CONTROL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
 </head>
+<body>
 
-<body style="background:#111;color:white;text-align:center;">
+<!-- ══════════════════════════════════════════════════════════
+     HEADER
+════════════════════════════════════════════════════════════ -->
+<header id="header">
+  <div class="header-left">
+    <div class="sys-logo">
+      <svg class="logo-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="12" cy="12" r="2"/>
+        <line x1="12" y1="12" x2="5"  y2="5"/>
+        <line x1="12" y1="12" x2="19" y2="5"/>
+        <line x1="12" y1="12" x2="5"  y2="19"/>
+        <line x1="12" y1="12" x2="19" y2="19"/>
+        <circle cx="5"  cy="5"  r="2.2"/>
+        <circle cx="19" cy="5"  r="2.2"/>
+        <circle cx="5"  cy="19" r="2.2"/>
+        <circle cx="19" cy="19" r="2.2"/>
+      </svg>
+      <span class="logo-text">DRONE RL</span>
+      <span class="logo-sep">·</span>
+      <span class="logo-sub">MISSION CONTROL</span>
+    </div>
+  </div>
 
-<h1>🚁 Autonomous Drone AI Control Center</h1>
+  <div class="header-center">
+    <div class="mode-pill" role="group" aria-label="Simulation mode">
+      <button class="mode-btn active" data-mode="coord"    onclick="setMode('coord')"    aria-pressed="true">COORD</button>
+      <button class="mode-btn"        data-mode="lidar"    onclick="setMode('lidar')"    aria-pressed="false">LIDAR</button>
+      <button class="mode-btn"        data-mode="advanced" onclick="setMode('advanced')" aria-pressed="false">ADVANCED</button>
+    </div>
+  </div>
 
-<button onclick="start()">Start Training</button>
+  <div class="header-right">
+    <div class="sys-indicator" aria-live="polite">
+      <span class="ind-dot" id="ind-dot"></span>
+      <span id="sys-status-text">SYSTEM NOMINAL</span>
+    </div>
+    <time class="sys-time" id="sys-time" aria-label="System time">--:--:--</time>
+    <button class="nav-toggle" id="nav-toggle" onclick="openMobileNav()" aria-label="Open menu">☰</button>
+  </div>
+</header>
 
-<h3>Episode: <span id="ep">0</span></h3>
-<h3>Reward: <span id="rew">0</span></h3>
-<h3>Length: <span id="len">0</span></h3>
+<!-- ══════════════════════════════════════════════════════════
+     MAIN GRID  (hero canvas · instruments · telemetry)
+════════════════════════════════════════════════════════════ -->
+<div class="layout-main">
 
-<canvas id="chart" width="600" height="300"></canvas>
+  <!-- ── HERO: SIMULATION CANVAS ─────────────────────────────── -->
+  <section class="panel panel--hero" aria-label="Simulation viewer">
+    <div class="panel-header">
+      <span class="panel-label">SIMULATION VIEWER</span>
+      <div class="sim-controls">
+        <button class="ctrl-btn ctrl-btn--start" id="btn-start" onclick="startSim()">▶ START</button>
+        <button class="ctrl-btn ctrl-btn--stop"  onclick="stopSim()">■ STOP</button>
+        <button class="ctrl-btn ctrl-btn--train" onclick="startTraining()">↑ TRAIN</button>
+        <span class="sim-status" id="sim-status">IDLE</span>
+      </div>
+    </div>
+    <div class="sim-wrap" id="sim-wrap">
+      <canvas id="sim-canvas" aria-label="Drone simulation canvas"></canvas>
+      <div class="coord-readout" id="coord-readout" aria-live="polite">—, —</div>
+      <div class="goal-flash"   id="goal-flash"    aria-live="assertive">WAYPOINT REACHED</div>
+    </div>
+  </section>
 
-<script>
-const socket = io();
+  <!-- ── SENSOR SUITE ────────────────────────────────────────── -->
+  <aside class="panel panel--instruments" aria-label="Sensor suite">
+    <span class="panel-label">SENSOR SUITE</span>
 
-let episodes = [];
-let rewards = [];
+    <div class="instrument-block">
+      <div class="instrument-label">LIDAR ARRAY</div>
+      <div class="lidar-wrap">
+        <canvas id="lidar-canvas" width="180" height="180" aria-label="Polar LIDAR display"></canvas>
+      </div>
+    </div>
 
-const ctx = document.getElementById("chart").getContext("2d");
+    <div class="instrument-block">
+      <div class="instrument-label">ENERGY RESERVE</div>
+      <div class="energy-track">
+        <div class="energy-fill" id="energy-fill" style="width:100%"></div>
+      </div>
+      <div class="instrument-val" id="energy-val">100.0%</div>
+    </div>
 
-const chart = new Chart(ctx, {
-    type: "line",
-    data: {
-        labels: episodes,
-        datasets: [{
-            label: "Reward",
-            data: rewards,
-            borderColor: "lime",
-            fill: false
-        }]
-    }
-});
+    <div class="instrument-block">
+      <div class="instrument-label">WIND VECTOR</div>
+      <div class="wind-row">
+        <canvas id="wind-canvas" width="56" height="56" aria-label="Wind vector compass"></canvas>
+        <div class="instrument-val" id="wind-val">(0.000, 0.000)</div>
+      </div>
+    </div>
 
-socket.on("update", function(data) {
-    document.getElementById("ep").innerText = data.episode;
-    document.getElementById("rew").innerText = data.reward;
-    document.getElementById("len").innerText = data.length;
+    <div class="instrument-block" id="motor-block">
+      <div class="instrument-label">MOTOR STATUS</div>
+      <div class="motor-row">
+        <div class="motor-chip" id="motor-0">M1 ●</div>
+        <div class="motor-chip" id="motor-1">M2 ●</div>
+      </div>
+    </div>
 
-    episodes.push(data.episode);
-    rewards.push(data.reward);
+    <div class="instrument-block" id="policy-block">
+      <div class="instrument-label">POLICY</div>
+      <div id="conf-bars">
+        <div class="conf-bar-row" id="cb-up">
+          <span class="conf-label">↑</span>
+          <div class="conf-track"><div class="conf-fill" id="cf-up" style="width:25%"></div></div>
+          <span class="conf-val" id="cv-up">25%</span>
+        </div>
+        <div class="conf-bar-row" id="cb-dn">
+          <span class="conf-label">↓</span>
+          <div class="conf-track"><div class="conf-fill" id="cf-dn" style="width:25%"></div></div>
+          <span class="conf-val" id="cv-dn">25%</span>
+        </div>
+        <div class="conf-bar-row" id="cb-lt">
+          <span class="conf-label">←</span>
+          <div class="conf-track"><div class="conf-fill" id="cf-lt" style="width:25%"></div></div>
+          <span class="conf-val" id="cv-lt">25%</span>
+        </div>
+        <div class="conf-bar-row" id="cb-rt">
+          <span class="conf-label">→</span>
+          <div class="conf-track"><div class="conf-fill" id="cf-rt" style="width:25%"></div></div>
+          <span class="conf-val" id="cv-rt">25%</span>
+        </div>
+      </div>
+    </div>
+  </aside>
 
-    chart.update();
-});
+  <!-- ── TELEMETRY + CURRICULUM ─────────────────────────────── -->
+  <aside class="panel panel--telem" aria-label="Telemetry readouts">
+    <span class="panel-label">TELEMETRY</span>
 
-function start() {
-    fetch("/start");
-}
-</script>
+    <div class="telem-hero-row">
+      <div class="telem-block">
+        <div class="telem-label">EPISODE</div>
+        <div class="telem-val telem-val--hero" id="t-episode">—</div>
+      </div>
+      <div class="telem-block">
+        <div class="telem-label">STEP</div>
+        <div class="telem-val telem-val--hero" id="t-step">—</div>
+      </div>
+    </div>
 
+    <div class="telem-reward-block">
+      <div class="telem-label">CUMULATIVE REWARD</div>
+      <div class="telem-val telem-val--reward" id="t-reward">—</div>
+    </div>
+
+    <div class="telem-grid">
+      <div class="telem-cell">
+        <div class="telem-label">STEP REW</div>
+        <div class="telem-val telem-val--sm" id="t-step-rew">—</div>
+      </div>
+      <div class="telem-cell">
+        <div class="telem-label">STATUS</div>
+        <div class="telem-val telem-val--sm" id="t-status">IDLE</div>
+      </div>
+      <div class="telem-cell">
+        <div class="telem-label">MODEL</div>
+        <div class="telem-val telem-val--sm" id="t-model">—</div>
+      </div>
+      <div class="telem-cell">
+        <div class="telem-label">ALGO</div>
+        <div class="telem-val telem-val--sm" id="t-algo">PPO</div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+    <span class="panel-label" style="margin-bottom:8px">CURRICULUM</span>
+
+    <div class="curr-row">
+      <span class="curr-badge" id="curr-badge">STAGE 1</span>
+      <span class="curr-name"  id="curr-name">Clear Sky</span>
+    </div>
+
+    <div class="curr-sr-row">
+      <span class="curr-label">SUCCESS</span>
+      <div class="curr-track">
+        <div class="curr-fill" id="curr-fill" style="width:0%"></div>
+      </div>
+      <span class="curr-pct" id="curr-pct">—%</span>
+    </div>
+
+    <div class="curr-pips" id="curr-pips" aria-label="Curriculum stage progress"></div>
+    <div class="curr-history" id="curr-history" aria-label="Recent episode outcomes"></div>
+  </aside>
+
+</div><!-- /layout-main -->
+
+<!-- ══════════════════════════════════════════════════════════
+     ROW 2  (reward curve · XAI)
+════════════════════════════════════════════════════════════ -->
+<div class="layout-row2">
+
+  <!-- ── TRAINING CURVE ────────────────────────────────────── -->
+  <section class="panel panel--curve" aria-label="Training reward history">
+    <div class="panel-header">
+      <span class="panel-label">TRAINING CURVE</span>
+      <div class="panel-actions">
+        <button class="ctrl-btn ctrl-btn--train" onclick="launchTrain('ppo')" title="Launch 500k PPO run">↑ PPO</button>
+        <button class="ctrl-btn ctrl-btn--sac"   onclick="launchTrain('sac')" title="Launch 300k SAC run">↑ SAC</button>
+        <button class="inline-btn" onclick="refreshCurve()">↻</button>
+      </div>
+    </div>
+    <div class="curve-wrap" id="curve-wrap">
+      <canvas id="curve-canvas" aria-label="Episode reward chart"></canvas>
+    </div>
+    <div class="curve-status" id="curve-status">Polling every 5 s during active training.</div>
+  </section>
+
+  <!-- ── XAI ───────────────────────────────────────────────── -->
+  <section class="panel panel--xai" aria-label="Feature importance analysis">
+    <div class="panel-header">
+      <span class="panel-label">FEATURE IMPORTANCE · XAI</span>
+      <button class="inline-btn" onclick="loadXAI()">ANALYSE</button>
+    </div>
+    <p class="xai-status" id="xai-status">
+      Run ANALYSE to compute which sensor inputs drive the policy's decisions.
+      Requires a trained advanced model.
+    </p>
+    <div class="xai-entropy" id="xai-entropy"></div>
+    <div class="xai-bars"    id="xai-bars"></div>
+  </section>
+
+</div><!-- /layout-row2 -->
+
+<!-- ══════════════════════════════════════════════════════════
+     ROW 3  (benchmark · mission · what-if)
+════════════════════════════════════════════════════════════ -->
+<div class="layout-row3">
+
+  <!-- ── BENCHMARK ─────────────────────────────────────────── -->
+  <section class="panel panel--benchmark" aria-label="Algorithm benchmark results">
+    <div class="panel-header">
+      <span class="panel-label">BENCHMARK</span>
+      <button class="inline-btn" onclick="loadBenchmark()">LOAD</button>
+    </div>
+    <p class="bench-status" id="bench-status">
+      No results cached. Run:<br>
+      <code style="font-size:0.62rem;color:var(--ice)">python -m train.multi_algo</code>
+    </p>
+    <table class="bench-table" role="table">
+      <thead>
+        <tr>
+          <th scope="col">ALGO</th>
+          <th scope="col">MEAN REW</th>
+          <th scope="col">STD</th>
+          <th scope="col">SUCCESS</th>
+          <th scope="col">SEEDS</th>
+        </tr>
+      </thead>
+      <tbody id="bench-body"></tbody>
+    </table>
+    <div class="sig-result" id="sig-result"></div>
+  </section>
+
+  <!-- ── MISSION COMMANDER ─────────────────────────────────── -->
+  <section class="panel panel--mission" aria-label="Natural language mission planner">
+    <div class="panel-header">
+      <span class="panel-label">MISSION COMMANDER</span>
+      <span class="groq-badge">GROQ AI</span>
+    </div>
+    <textarea
+      class="mission-input"
+      id="mission-input"
+      rows="2"
+      placeholder="Describe a mission — e.g. 'Storm penetration through 12 obstacles with degraded motors at long range'"
+      aria-label="Mission description"
+    ></textarea>
+    <div class="mission-actions">
+      <button class="ctrl-btn ctrl-btn--plan" onclick="planMission()">▶ EXECUTE PLAN</button>
+      <button class="inline-btn" onclick="loadMissionHistory()">HISTORY</button>
+    </div>
+    <div class="mission-result" id="mission-result">
+      <span class="empty-state-text">Awaiting mission directive.</span>
+    </div>
+    <div class="mission-history" id="mission-history"></div>
+  </section>
+
+  <!-- ── WHAT-IF SIMULATOR ─────────────────────────────────── -->
+  <section class="panel panel--whatif" aria-label="What-if trajectory simulator">
+    <div class="panel-header">
+      <span class="panel-label">WHAT-IF SIMULATOR</span>
+      <div class="panel-actions">
+        <button class="inline-btn" id="btn-predict" onclick="runWhatIf()">PREDICT</button>
+        <button class="inline-btn" onclick="clearWhatIf()">✕ CLEAR</button>
+      </div>
+    </div>
+    <p class="whatif-hint">
+      Start the Advanced sim, then tap the canvas to place hypothetical obstacles.
+      Hit PREDICT to see how the policy's action vector would shift.
+    </p>
+    <div class="wi-wrap" id="wi-wrap">
+      <canvas id="wi-canvas" aria-label="What-if obstacle canvas"></canvas>
+    </div>
+    <div class="wi-result" id="wi-result"></div>
+  </section>
+
+</div><!-- /layout-row3 -->
+
+<!-- ══════════════════════════════════════════════════════════
+     MOBILE NAV OVERLAY
+════════════════════════════════════════════════════════════ -->
+<nav class="mobile-nav" id="mobile-nav" aria-hidden="true" aria-label="Navigation menu">
+  <div class="mobile-nav-inner">
+    <button class="nav-close" onclick="closeMobileNav()" aria-label="Close menu">✕</button>
+    <div class="mobile-mode-select">
+      <span class="panel-label">SIMULATION MODE</span>
+      <button class="mode-btn-lg active" data-mode="coord"    onclick="setMode('coord');closeMobileNav()">COORD</button>
+      <button class="mode-btn-lg"        data-mode="lidar"    onclick="setMode('lidar');closeMobileNav()">LIDAR</button>
+      <button class="mode-btn-lg"        data-mode="advanced" onclick="setMode('advanced');closeMobileNav()">ADVANCED</button>
+    </div>
+    <div class="mobile-actions">
+      <button class="ctrl-btn ctrl-btn--start" onclick="startSim();closeMobileNav()">▶ START SIM</button>
+      <button class="ctrl-btn ctrl-btn--stop"  onclick="stopSim();closeMobileNav()">■ STOP SIM</button>
+      <button class="ctrl-btn ctrl-btn--train" onclick="startTraining();closeMobileNav()">↑ TRAIN PPO</button>
+    </div>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════════════════════
+     MOBILE BOTTOM BAR
+════════════════════════════════════════════════════════════ -->
+<div class="mobile-bar" id="mobile-bar" role="toolbar" aria-label="Quick controls">
+  <button class="mb-btn"         onclick="startSim()"      aria-label="Start simulation">▶</button>
+  <button class="mb-btn mb-btn--stop" onclick="stopSim()"  aria-label="Stop simulation">■</button>
+  <button class="mb-btn mb-btn--mode" onclick="openMobileNav()" aria-label="Menu">☰</button>
+  <div class="mb-telem">
+    <span id="mb-ep">EP —</span>
+    <span class="mb-rew" id="mb-rew">—</span>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
 </body>
 </html>

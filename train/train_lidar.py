@@ -1,16 +1,15 @@
 """
-Train PPO on the exact-coordinate DroneEnv.
+Train PPO on DroneEnvLidar (8-ray LIDAR + goal direction, Box(10,)).
+Saves to models/lidar/ — does NOT touch existing exact-coord models.
 
 Usage:
-    python -m train.train_ppo [--timesteps 200000] [--seed 42] [--curriculum] [--mlflow]
-    python train/run.py --algo ppo --env grid          # via master entrypoint
+    python -m train.train_lidar [--timesteps 400000] [--seed 42] [--obstacles 15]
+    python train/run.py --algo ppo --env lidar          # via master entrypoint
 """
 
 import argparse
 import json
-import os
 import random
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -22,13 +21,14 @@ from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from env.drone_env import DroneEnv
+from env.drone_env_lidar import DroneEnvLidar
 
 # ---------------------------------------------------------------------------
 # CONFIG
 # ---------------------------------------------------------------------------
-DEFAULT_TIMESTEPS: int = 200_000
+DEFAULT_TIMESTEPS: int = 400_000
 DEFAULT_SEED: int = 42
+DEFAULT_OBSTACLES: int = 15
 PPO_HYPERPARAMS: dict = dict(
     learning_rate=3e-4,
     n_steps=2048,
@@ -64,7 +64,7 @@ def _save_json(path: Path, data: dict) -> None:
 # CALLBACK
 # ---------------------------------------------------------------------------
 class LiveMetricsCallback(BaseCallback):
-    """Logs per-episode metrics to disk for the dashboard."""
+    """Logs per-episode metrics to disk for the LIDAR model dashboard."""
 
     def __init__(self, metrics_file: Path, state_file: Path) -> None:
         super().__init__()
@@ -76,7 +76,7 @@ class LiveMetricsCallback(BaseCallback):
         self._flush_every: int = 10
 
     def __repr__(self) -> str:
-        return f"LiveMetricsCallback(ep={self.ep_count})"
+        return f"LiveMetricsCallback(lidar, ep={self.ep_count})"
 
     def _on_step(self) -> bool:
         rewards = self.locals.get("rewards")
@@ -90,7 +90,8 @@ class LiveMetricsCallback(BaseCallback):
         if bool(dones[0]):
             self.ep_count += 1
             print(
-                f"Ep {self.ep_count:4d} | Reward {self.ep_reward:7.2f} | Len {self.ep_length:3d}"
+                f"[LIDAR] Ep {self.ep_count:4d} | "
+                f"Reward {self.ep_reward:7.2f} | Len {self.ep_length:3d}"
             )
 
             m = _load_json(self.metrics_file)
@@ -107,7 +108,7 @@ class LiveMetricsCallback(BaseCallback):
                     episode=self.ep_count,
                     reward=float(self.ep_reward),
                     episode_length=self.ep_length,
-                    model_type="coord",
+                    model_type="lidar",
                 )
                 _save_json(self.state_file, s)
 
@@ -122,25 +123,16 @@ class LiveMetricsCallback(BaseCallback):
 def main(
     timesteps: int = DEFAULT_TIMESTEPS,
     seed: int = DEFAULT_SEED,
-    use_curriculum: bool = False,
-    use_mlflow: bool = False,
+    n_obstacles: int = DEFAULT_OBSTACLES,
     root_dir: Optional[Path] = None,
 ) -> Path:
-    """Train PPO on DroneEnv. Returns path to the saved final model."""
+    """Train PPO on DroneEnvLidar. Returns path to the saved final model."""
     root = root_dir or Path(__file__).parent.parent
     log_dir = root / "logs"
-    model_dir = root / "models" / ("curriculum" if use_curriculum else "")
+    model_dir = root / "models" / "lidar"
     best_dir = model_dir / "best_model"
-    ckpt_dir = (
-        model_dir / "checkpoints"
-        if use_curriculum
-        else root / "models" / "checkpoints"
-    )
-    metrics_file = (
-        log_dir / f"metrics_seed_{seed}.json"
-        if seed != DEFAULT_SEED
-        else log_dir / "metrics.json"
-    )
+    ckpt_dir = model_dir / "checkpoints"
+    metrics_file = log_dir / "metrics_lidar.json"
     state_file = log_dir / "live_state.json"
 
     for d in (log_dir, model_dir, best_dir, ckpt_dir):
@@ -148,25 +140,13 @@ def main(
 
     if not metrics_file.exists():
         _save_json(metrics_file, {"episodes": [], "rewards": [], "lengths": []})
-    if not state_file.exists():
-        _save_json(
-            state_file,
-            {
-                "training": False,
-                "episode": 0,
-                "reward": 0.0,
-                "episode_length": 0,
-                "last_action": None,
-                "probs": {"up": 0.25, "down": 0.25, "left": 0.25, "right": 0.25},
-            },
-        )
 
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
     def make_env() -> Monitor:
-        return Monitor(DroneEnv())
+        return Monitor(DroneEnvLidar(n_obstacles=n_obstacles))
 
     env = DummyVecEnv([make_env])
     eval_env = DummyVecEnv([make_env])
@@ -183,23 +163,10 @@ def main(
         CheckpointCallback(
             save_freq=CKPT_FREQ,
             save_path=str(ckpt_dir),
-            name_prefix="drone_ppo",
+            name_prefix="drone_ppo_lidar",
         ),
         LiveMetricsCallback(metrics_file, state_file),
     ]
-
-    if use_curriculum:
-        from train.curriculum import CurriculumCallback
-        callbacks.append(
-            CurriculumCallback(
-                vec_env=env,
-                start_obstacles=3,
-                max_obstacles=25,
-                step_interval=25_000,
-                state_file=str(state_file),
-            )
-        )
-        print("[Curriculum] Enabled — obstacles ramp 3->25 every 25k steps")
 
     model = PPO(
         policy="MlpPolicy",
@@ -210,64 +177,33 @@ def main(
         **PPO_HYPERPARAMS,
     )
 
-    mlflow_run = None
-    if use_mlflow:
-        try:
-            import mlflow
-            mlflow.start_run(run_name=f"ppo_{int(time.time())}")
-            mlflow.log_params({"seed": seed, "timesteps": timesteps})
-            mlflow_run = mlflow
-            print("[MLflow] Run started")
-        except ImportError:
-            print("[MLflow] Not installed — skipping")
-
-    tb_name = "drone_rl_production" + ("_curriculum" if use_curriculum else "")
-    print(f"\n[TRAIN] timesteps={timesteps}  seed={seed}  curriculum={use_curriculum}")
+    print(f"\n[LIDAR TRAIN] timesteps={timesteps}  seed={seed}  obstacles={n_obstacles}")
 
     s = _load_json(state_file)
     s["training"] = True
     _save_json(state_file, s)
 
-    model.learn(total_timesteps=timesteps, callback=callbacks, tb_log_name=tb_name)
+    model.learn(total_timesteps=timesteps, callback=callbacks, tb_log_name="drone_rl_lidar")
 
     s = _load_json(state_file)
     s["training"] = False
     _save_json(state_file, s)
 
-    final_path = model_dir / "drone_ppo_final"
+    final_path = model_dir / "drone_ppo_lidar_final"
     model.save(str(final_path))
-    print(f"\nTRAINING COMPLETE")
+    print(f"\nLIDAR TRAINING COMPLETE")
     print(f"   Final : {final_path}.zip")
-
-    if not use_curriculum:
-        compat = root / "models" / "drone_ppo"
-        model.save(str(compat))
-        print(f"   Compat: {compat}.zip")
-
-    if mlflow_run:
-        try:
-            m = _load_json(metrics_file)
-            if m.get("rewards"):
-                mlflow_run.log_metric("final_mean_reward", float(np.mean(m["rewards"][-50:])))
-            mlflow_run.log_artifact(f"{final_path}.zip")
-            mlflow_run.end_run()
-        except Exception as e:
-            print(f"[MLflow] Error: {e}")
+    print(f"   Best  : {best_dir}")
+    print(f"   Ckpts : {ckpt_dir}")
 
     return Path(f"{final_path}.zip")
 
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train PPO on DroneEnv (exact coords)")
+    parser = argparse.ArgumentParser(description="Train PPO on DroneEnvLidar")
     parser.add_argument("--timesteps", type=int, default=DEFAULT_TIMESTEPS)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
-    parser.add_argument("--curriculum", action="store_true")
-    parser.add_argument("--mlflow", action="store_true")
+    parser.add_argument("--obstacles", type=int, default=DEFAULT_OBSTACLES)
     args, _ = parser.parse_known_args()
-    main(
-        timesteps=args.timesteps,
-        seed=args.seed,
-        use_curriculum=args.curriculum,
-        use_mlflow=args.mlflow,
-    )
+    main(timesteps=args.timesteps, seed=args.seed, n_obstacles=args.obstacles)

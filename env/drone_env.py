@@ -10,7 +10,7 @@ class DroneEnv(gym.Env):
     Goal: Reach target while avoiding obstacles
     """
 
-    def __init__(self):
+    def __init__(self, n_obstacles=15):
         super(DroneEnv, self).__init__()
 
         # =========================
@@ -18,6 +18,7 @@ class DroneEnv(gym.Env):
         # =========================
         self.grid_size = 10
         self.max_steps = 200
+        self.n_obstacles = n_obstacles
 
         # Actions: Up, Down, Left, Right
         self.action_space = spaces.Discrete(4)
@@ -57,7 +58,7 @@ class DroneEnv(gym.Env):
     def _generate_obstacles(self):
         obstacles = set()
 
-        for _ in range(15):
+        for _ in range(self.n_obstacles):
             x = random.randint(0, self.grid_size - 1)
             y = random.randint(0, self.grid_size - 1)
 
@@ -88,6 +89,7 @@ class DroneEnv(gym.Env):
 
         self.steps += 1
 
+        prev_pos  = self.drone_pos.copy()
         prev_dist = self._distance_to_goal()
 
         # -------------------------
@@ -112,7 +114,7 @@ class DroneEnv(gym.Env):
         new_dist = self._distance_to_goal()
 
         # =========================
-        # 🔥 REWARD FUNCTION (FIXED)
+        # REWARD FUNCTION
         # =========================
         reward = 0.0
         terminated = False
@@ -123,10 +125,10 @@ class DroneEnv(gym.Env):
         # 2. small survival penalty
         reward -= 0.05
 
-        # 3. obstacle collision
+        # 3. obstacle collision — bounce back, keep going (no episode end)
         if tuple(self.drone_pos) in self.obstacles:
-            reward -= 50
-            terminated = True
+            reward -= 10
+            self.drone_pos = prev_pos.copy()  # push back to safe cell
 
         # 4. goal reached
         if np.array_equal(self.drone_pos, self.goal_pos):
