@@ -131,25 +131,37 @@ def _mann_whitney(
     label_a: str,
     label_b: str,
 ) -> Dict:
-    """Two-sided Mann-Whitney U test for reward distributions."""
-    try:
-        from scipy.stats import mannwhitneyu
-        statistic, p_value = mannwhitneyu(
-            rewards_a, rewards_b, alternative="two-sided"
-        )
-        significant = bool(p_value < 0.05)
-        winner = (
-            label_a if np.mean(rewards_a) > np.mean(rewards_b) else label_b
-        ) if significant else "no significant difference"
-        return {
-            "test": "Mann-Whitney U",
-            "statistic": float(statistic),
-            "p_value": float(p_value),
-            "significant_at_0.05": significant,
-            "winner": winner,
-        }
-    except ImportError:
-        return {"test": "Mann-Whitney U", "error": "scipy not installed"}
+    """Two-sided Mann-Whitney U test for reward distributions (pure numpy)."""
+    a, b = np.array(rewards_a, dtype=float), np.array(rewards_b, dtype=float)
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return {"test": "Mann-Whitney U", "error": "need ≥2 samples per group"}
+    # U statistic: count pairs where a > b
+    u_a = float(np.sum(a[:, None] > b[None, :]) + 0.5 * np.sum(a[:, None] == b[None, :]))
+    u_b = float(na * nb - u_a)
+    statistic = min(u_a, u_b)
+    # Normal approximation (valid for na,nb >= 8)
+    mu_u  = na * nb / 2.0
+    sig_u = np.sqrt(na * nb * (na + nb + 1) / 12.0)
+    z     = (statistic - mu_u) / sig_u if sig_u > 0 else 0.0
+    # Two-tailed p via complementary error function (no scipy needed)
+    p_value = float(np.exp(-0.5 * z * z) * np.sqrt(2 / np.pi) * 0.5 + 0.5 -
+                    0.5 * np.sign(z) * (1 - np.exp(-0.5 * z * z)))
+    # Accurate two-tailed p via erfc approximation
+    az = abs(z) / np.sqrt(2)
+    t  = 1.0 / (1.0 + 0.3275911 * az)
+    erfc_approx = (t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 +
+                   t * (-1.453152027 + t * 1.061405429))))) * np.exp(-az * az)
+    p_value = float(min(1.0, 2.0 * erfc_approx))
+    significant = p_value < 0.05
+    winner = (label_a if np.mean(a) > np.mean(b) else label_b) if significant else "no significant difference"
+    return {
+        "test": "Mann-Whitney U",
+        "statistic": float(statistic),
+        "p_value": p_value,
+        "significant_at_0_05": significant,
+        "winner": winner,
+    }
 
 
 # ---------------------------------------------------------------------------

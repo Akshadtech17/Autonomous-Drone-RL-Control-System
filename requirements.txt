@@ -24,9 +24,6 @@ mlflow==2.15.1
 # Hyperparameter optimization
 optuna==3.6.1
 
-# Statistical testing
-scipy==1.14.1
-
 # LLM mission planner (Groq)
 groq==1.4.0
 
