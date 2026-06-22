@@ -1,0 +1,245 @@
+Autonomous-Drone-RL — Command Reference
+========================================
+All commands needed to work with this project, grouped by workflow.
+Python 3.11.9 required. Commands are shown for Linux/macOS; Windows
+equivalents are noted where they differ.
+
+========================================
+1. SETUP / INSTALLATION
+========================================
+
+# Clone the repository
+git clone https://github.com/Akshad1234/Autonomous-Drone-RL.git
+cd Autonomous-Drone-RL
+
+# Create a virtual environment (recommended)
+python -m venv venv
+
+# Activate the virtual environment
+#   Linux / macOS:
+source venv/bin/activate
+#   Windows (CMD):
+venv\Scripts\activate.bat
+#   Windows (PowerShell):
+venv\Scripts\Activate.ps1
+
+# Install all Python dependencies
+pip install -r requirements.txt
+# Installs Flask, Stable-Baselines3, Gymnasium, PyTorch, Optuna,
+# Groq SDK, SciPy, NumPy, Gunicorn, Gevent, and Colorama.
+
+# (Optional) Set the Groq API key for the NL mission planner
+#   Linux / macOS:
+export GROQ_API_KEY="gsk_..."
+#   Windows CMD:
+set GROQ_API_KEY=gsk_...
+#   Windows PowerShell:
+$env:GROQ_API_KEY = "gsk_..."
+# Without this key the mission planner falls back to safe defaults
+# and the rest of the system is fully functional.
+
+========================================
+2. ENVIRONMENT SMOKE TESTS
+========================================
+
+# Run environment unit tests (verifies reset/step API and obs shapes)
+python test_env.py
+
+# Run API client tests (requires the Flask server to be running first)
+python test_client.py
+
+========================================
+3. TRAINING
+========================================
+
+--- Baseline environments (10x10 discrete grid) ---
+
+# Train PPO on the original coordinate-observation environment (200k steps)
+# Saves model to models/drone_ppo_final.zip
+python -m train.train_ppo
+
+# Train PPO on the 8-beam LIDAR environment (400k steps)
+# Saves model to models/lidar/drone_ppo_lidar_final.zip
+python -m train.train_lidar
+
+--- Advanced environment (continuous 20x20 world) via master CLI ---
+
+# Train PPO on DroneEnvAdvanced (500k steps, MLP policy)
+# Saves model to models/advanced/ppo/drone_ppo_advanced_final.zip
+python train/run.py --train --algo ppo --timesteps 500000
+
+# Train PPO with 10-stage progressive curriculum (recommended)
+# StagedCurriculum auto-promotes/demotes based on rolling success rate
+python train/run.py --train --algo ppo --timesteps 500000 --curriculum
+
+# Train SAC on DroneEnvAdvanced (300k steps; more sample-efficient)
+# Saves model to models/advanced/sac/drone_sac_advanced_final.zip
+python train/run.py --train --algo sac --timesteps 300000
+
+# Train PPO with the Transformer-based LIDAR feature extractor
+# Uses LidarTransformerExtractor (~93,317 additional parameters)
+python train/run.py --train --algo ppo --transformer --timesteps 500000
+
+# Train with curriculum AND Transformer policy combined
+python train/run.py --train --algo ppo --transformer --timesteps 500000 --curriculum
+
+# Train the baseline grid environments via the master CLI
+python train/run.py --train-basic --timesteps 200000
+python train/run.py --train-lidar --timesteps 400000
+
+========================================
+4. HYPERPARAMETER OPTIMIZATION
+========================================
+
+# Run Optuna HPO for PPO (20 trials, TPE sampler, 30k steps per trial)
+# Outputs logs/hpo_results_ppo.json with all trial params and best result
+python train/run.py --hpo --algo ppo --trials 20
+
+# Run Optuna HPO for SAC (20 trials)
+# Outputs logs/hpo_results_sac.json
+python train/run.py --hpo --algo sac --trials 20
+
+# Run with a custom number of trials and timesteps per trial
+python train/run.py --hpo --algo ppo --trials 50 --timesteps 50000
+
+========================================
+5. MULTI-ALGORITHM STATISTICAL COMPARISON
+========================================
+
+# Compare PPO vs SAC across 3 seeds with Mann-Whitney U significance test
+# Trains both algorithms for 100k steps on each seed, evaluates 50 episodes,
+# applies two-sided Mann-Whitney U test (p < 0.05).
+# Outputs logs/multi_algo_results.json
+python train/run.py --multi-algo --timesteps 100000 --seeds 42 123 456
+
+# Use custom seeds or more timesteps for a more thorough comparison
+python train/run.py --multi-algo --timesteps 300000 --seeds 0 1 2 3 4
+
+========================================
+6. NATURAL-LANGUAGE MISSION PLANNING
+========================================
+
+# Parse a free-text mission description via Groq API (requires GROQ_API_KEY)
+# Converts the text to a MissionSpec, displays difficulty and domain config
+python train/run.py --plan "Storm run through 12 moving obstacles with motor failure"
+
+# Example missions
+python train/run.py --plan "Easy hover with no obstacles"
+python train/run.py --plan "GPS-denied environment with high wind and 30% motor failure"
+python train/run.py --plan "Combat zone, maximum difficulty, use SAC"
+
+# Via the web dashboard (no terminal needed):
+#   1. Run: python app.py
+#   2. Open http://localhost:5000
+#   3. Type your mission in the Mission Planner card and click Plan
+
+========================================
+7. EVALUATION
+========================================
+
+# Run 100 deterministic evaluation episodes on the best saved model
+# Reports mean reward, success rate, and episode length
+python train/run.py --eval --episodes 100
+
+# Benchmark all saved checkpoints (100 episodes each)
+# Useful for training curve analysis
+python evaluate/benchmark.py
+
+# Visualize the learned policy as a 10x10 directional arrow heatmap
+# Exports a PNG file to the current directory
+python evaluate/policy_heatmap.py
+
+# Plot shaded reward curves (mean ± std) across training seeds
+# Reads metrics JSON files from the logs/ directory
+python evaluate/plot_variance.py
+
+# Run Pygame visual simulation (requires a saved model and display)
+python evaluate/simulate.py
+
+========================================
+8. XAI (EXPLAINABILITY) ANALYSIS
+========================================
+
+# Run all four XAI analyses on the best PPO model
+# Outputs: feature importance ranking, entropy summary, trajectory explanation
+python train/run.py --xai
+
+# Specify a model path explicitly
+python train/run.py --xai --model-path models/advanced/ppo/drone_ppo_advanced_final.zip
+
+# Access XAI via the dashboard (no terminal needed):
+#   1. Run: python app.py
+#   2. Open http://localhost:5000
+#   3. Click "Analyse" in the Feature Importance panel
+#   4. Use the What-If panel to perturb individual observation features
+
+========================================
+9. RUNNING THE WEB DASHBOARD (DEVELOPMENT)
+========================================
+
+# Start the Flask development server (single-threaded, hot-reload)
+python app.py
+# Open http://localhost:5000 in a browser.
+# The dashboard works without model files (random-policy fallback simulators
+# are used automatically when no .zip model files are present).
+
+# Dashboard features accessible at http://localhost:5000 :
+#   /                     Main dashboard page
+#   /simulate/start       SSE stream: grid environment simulation
+#   /simulate/advanced/start  SSE stream: advanced environment simulation
+#   /state                JSON: current training state
+#   /curriculum/state     JSON: curriculum stage, success rate, history
+#   /xai/importance       GET: feature importance analysis
+#   /xai/explain          POST: NL trajectory explanation
+#   /whatif               POST: what-if perturbation analysis
+#   /benchmark            GET: PPO vs SAC stats and significance test
+#   /predict              POST: model inference with action probabilities
+#   /plan                 POST: NL mission -> MissionSpec (Groq API)
+#   /metrics              GET: episode reward histories for Chart.js
+#   /health               GET: server health check
+
+========================================
+10. DEPLOYMENT
+========================================
+
+--- Production server (local) ---
+
+# Start Gunicorn with a single Gevent async worker (matches Render deployment)
+# Required for SSE streaming; multiple workers do not share in-memory models
+gunicorn -w 1 --worker-class gevent -b 0.0.0.0:8000 --timeout 120 app:app
+
+# Specify a custom port
+gunicorn -w 1 --worker-class gevent -b 0.0.0.0:5000 --timeout 120 app:app
+
+--- Render (cloud) ---
+
+# Render reads the Procfile automatically:
+#   web: gunicorn -w 1 --worker-class gevent -b 0.0.0.0:$PORT --timeout 120 app:app
+# Set the GROQ_API_KEY environment variable in the Render dashboard under
+# Environment > Environment Variables before deploying.
+
+# The live deployment is available at:
+#   https://autonomous-drone-rl-control-system.onrender.com/
+
+========================================
+11. COMMON COMBINED WORKFLOWS
+========================================
+
+# Full training pipeline from scratch (PPO + curriculum + transformer)
+python train/run.py --train --algo ppo --transformer --timesteps 500000 --curriculum
+
+# Then run statistical benchmark
+python train/run.py --multi-algo --timesteps 100000 --seeds 42 123 456
+
+# Then launch dashboard to inspect results
+python app.py
+
+# Quick sanity check (no GPU needed, ~5 minutes)
+python train/run.py --train-basic --timesteps 10000
+python train/run.py --eval --episodes 10
+python app.py
+
+# HPO then use best params for a full training run
+python train/run.py --hpo --algo ppo --trials 20
+# (read logs/hpo_results_ppo.json for best params, then train with them)
+python train/run.py --train --algo ppo --timesteps 500000 --curriculum

@@ -1,0 +1,224 @@
+Autonomous-Drone-RL — Project File Structure
+=============================================
+Tree view with one-line descriptions for every important file and folder.
+Generated from codebase; reflects actual content as of 2026-06-22.
+
+Autonomous-Drone-RL/
+│
+├── app.py                          Main Flask web dashboard (1,774 lines).
+│                                   Exposes 15 HTTP routes including SSE streaming
+│                                   endpoints for grid-env and advanced-env simulation,
+│                                   XAI analysis, curriculum state, mission planning,
+│                                   inference, benchmarking, and live metrics.
+│
+├── requirements.txt                Python package dependencies (Flask, SB3, Gymnasium,
+│                                   PyTorch, Optuna, Groq, SciPy, NumPy, Gunicorn, Gevent).
+│
+├── Procfile                        Render/Heroku deployment command:
+│                                   gunicorn with a single Gevent async worker and
+│                                   120-second timeout for SSE connections.
+│
+├── runtime.txt                     Declares Python 3.11.9 for the Render build system.
+│
+├── LICENSE                         MIT open-source license.
+│
+├── README.md                       IEEE-format project documentation (this repository's
+│                                   main technical report: abstract, methodology,
+│                                   literature survey, implementation, references).
+│
+├── file_structure.txt              (This file) Directory tree with descriptions.
+│
+├── commands.txt                    All setup, training, evaluation, and deployment
+│                                   commands grouped by workflow category.
+│
+├── test_env.py                     Smoke tests for the Gymnasium environments:
+│                                   verifies reset/step API, observation shapes,
+│                                   action space bounds.
+│
+├── test_client.py                  Simple HTTP client test for the Flask API:
+│                                   calls /health and /predict to confirm the server
+│                                   is responding correctly.
+│
+│
+├── env/                            BASELINE ENVIRONMENTS (original, unmodified)
+│   ├── __init__.py                 Package marker; exports DroneEnv and DroneEnvLidar.
+│   ├── drone_env.py                DroneEnv: 10×10 discrete grid, 4 cardinal actions,
+│   │                               Box(4,) observation [drone_x, drone_y, goal_x, goal_y],
+│   │                               15 static obstacles, max 200 steps.
+│   └── drone_env_lidar.py          DroneEnvLidar: same 10×10 grid with Discrete(4) actions
+│                                   but replaces coordinate obs with 8-beam LIDAR +
+│                                   goal direction; Box(10,) observation.
+│
+│
+├── drone/                          ADVANCED PACKAGE (publication-quality modules)
+│   ├── __init__.py                 Package marker.
+│   │
+│   ├── envs/
+│   │   ├── __init__.py             Package marker; exports DroneEnvAdvanced.
+│   │   └── advanced.py             DroneEnvAdvanced: continuous 20×20 world,
+│   │                               Box(2,) actions, Box(74,) observations including
+│   │                               64-beam LIDAR, goal vector, velocity, energy,
+│   │                               Dryden wind, and per-axis motor status.
+│   │                               Implements ray-circle LIDAR geometry, Gauss-Markov
+│   │                               wind turbulence, motor failure, energy depletion,
+│   │                               and shaped reward function. Compatible with
+│   │                               StagedCurriculum via set_config().
+│   │
+│   ├── curriculum/
+│   │   ├── __init__.py             Package marker; exports StagedCurriculum.
+│   │   └── staged.py               StagedCurriculum: SB3 BaseCallback that manages
+│   │                               10 progressive difficulty stages. Auto-promotes
+│   │                               when rolling 100-episode success rate > 80%,
+│   │                               auto-demotes when < 30%. Persists stage state to
+│   │                               logs/live_state.json for dashboard visualization.
+│   │
+│   ├── policies/
+│   │   ├── __init__.py             Package marker; exports LidarTransformerExtractor
+│   │                               and make_transformer_kwargs().
+│   │   └── transformer.py          LidarTransformerExtractor: SB3 BaseFeaturesExtractor
+│   │                               that encodes each of 64 LIDAR beams as a token
+│   │                               [dist, cos(angle), sin(angle)], prepends a CLS
+│   │                               context token (goal/vel/wind/motor), runs two
+│   │                               Transformer encoder layers (4 heads, d_ff=128,
+│   │                               pre-LayerNorm, GELU), mean-pools, and projects to
+│   │                               128-dimensional features (~93,317 parameters).
+│   │
+│   ├── xai/
+│   │   ├── __init__.py             Package marker; exports XAIExplainer.
+│   │   └── explainer.py            XAIExplainer: four analysis modes —
+│   │                               (1) correlation-based feature importance (top-20),
+│   │                               (2) Gaussian action-distribution entropy,
+│   │                               (3) rule-based natural-language trajectory summary,
+│   │                               (4) what-if perturbation analysis.
+│   │                               No SHAP or LIME dependency.
+│   │
+│   └── llm/
+│       ├── __init__.py             Package marker; exports MissionPlanner.
+│       └── planner.py              MissionPlanner: sends free-text mission descriptions
+│                                   to the Groq API (llama-3.3-70b-versatile) with a
+│                                   strict JSON schema, validates/clamps the response,
+│                                   converts it to a DomainConfig, logs to
+│                                   logs/mission_log.jsonl. Fails gracefully without
+│                                   a GROQ_API_KEY.
+│
+│
+├── train/                          TRAINING ORCHESTRATION
+│   ├── __init__.py                 Package marker.
+│   ├── run.py                      Master CLI entry point. Uses argparse to dispatch
+│   │                               among: --train-basic, --train-lidar, --train,
+│   │                               --hpo, --multi-algo, --plan, --xai, --eval.
+│   │                               Single command covers all training and evaluation
+│   │                               workflows.
+│   ├── train_ppo.py                Original PPO trainer for DroneEnv (10×10 grid,
+│   │                               coordinate observations, 200k timesteps).
+│   ├── train_lidar.py              Original PPO trainer for DroneEnvLidar (10×10 grid,
+│   │                               8-beam LIDAR observations, 400k timesteps).
+│   ├── train_advanced.py           Main PPO/SAC trainer for DroneEnvAdvanced.
+│   │                               Registers four SB3 callbacks: CheckpointCallback
+│   │                               (25k steps), EvalCallback (10k steps, Stage 5 config),
+│   │                               AdvancedMetricsCallback (per-episode JSON logging),
+│   │                               and optionally StagedCurriculum.
+│   ├── hpo.py                      Optuna hyperparameter optimization: 20 trials,
+│   │                               TPE sampler, MedianPruner. Searches learning rate,
+│   │                               network architecture, batch size, and
+│   │                               algorithm-specific parameters. Outputs
+│   │                               logs/hpo_results_<algo>.json.
+│   └── multi_algo.py               Multi-seed algorithm comparison: trains PPO and SAC
+│                                   across 3 seeds, evaluates 50 episodes each, applies
+│                                   Mann-Whitney U two-sided significance test (p < 0.05).
+│                                   Outputs logs/multi_algo_results.json.
+│
+│
+├── evaluate/                       EVALUATION AND ANALYSIS
+│   ├── __init__.py                 Package marker.
+│   ├── simulate.py                 Pygame-based visual episode playback for trained
+│   │                               policies. Renders drone, obstacles, goal, and path
+│   │                               trail at interactive frame rates.
+│   ├── benchmark.py                100-episode deterministic evaluation across all
+│   │                               saved model checkpoints. Reports mean reward,
+│   │                               success rate, and episode length per checkpoint.
+│   ├── policy_heatmap.py           Visualizes the learned policy as a 10×10 arrow
+│   │                               heatmap: queries the model at each grid cell and
+│   │                               renders an arrow in the direction of the chosen
+│   │                               action. Exports a PNG.
+│   └── plot_variance.py            Plots shaded reward curves (mean ± std) across
+│                                   multiple training seeds using Matplotlib.
+│
+│
+├── inference/                      MODEL DEPLOYMENT / INFERENCE API
+│   ├── __init__.py                 Package marker; exports get_action and
+│   │                               get_action_with_probs.
+│   └── predict.py                  get_action(obs, model_path) returns an integer
+│                                   action; get_action_with_probs(obs, model_path)
+│                                   returns a dict with action, action_name, per-action
+│                                   probability distribution, and original obs.
+│                                   Models are cached in memory after first load.
+│
+│
+├── models/                         SAVED MODEL FILES AND CHECKPOINTS
+│   ├── drone_ppo_final.zip         Trained PPO model for DroneEnv (200k steps baseline).
+│   ├── lidar/                      LIDAR baseline model directory.
+│   │   ├── drone_ppo_lidar_final.zip   Final LIDAR PPO model (400k steps).
+│   │   ├── best_model/             EvalCallback best checkpoint during LIDAR training.
+│   │   └── checkpoints/            Intermediate checkpoints saved every 25k steps.
+│   └── advanced/                   Advanced environment model directory.
+│       ├── ppo/                    PPO models for DroneEnvAdvanced.
+│       │   ├── drone_ppo_advanced_final.zip   Final PPO model (500k steps).
+│       │   ├── best_model/         Best checkpoint by eval reward.
+│       │   └── checkpoints/        Intermediate PPO checkpoints.
+│       ├── sac/                    SAC models for DroneEnvAdvanced.
+│       │   ├── drone_sac_advanced_final.zip   Final SAC model (300k steps).
+│       │   ├── best_model/         Best checkpoint by eval reward.
+│       │   └── checkpoints/        Intermediate SAC checkpoints.
+│       └── benchmark/              Per-seed models generated by multi_algo.py
+│                                   for statistical significance evaluation.
+│
+│
+├── logs/                           LOGGING AND LIVE STATE
+│   ├── live_state.json             Real-time synchronization file between the training
+│   │                               process and the Flask dashboard. Updated every
+│   │                               episode by training callbacks; polled every 1–5s
+│   │                               by the dashboard frontend.
+│   │                               Fields: training flag, episode, reward, step,
+│   │                               last action, action probabilities, curriculum stage,
+│   │                               stage name, success rate, episode history.
+│   ├── metrics.json                Episode reward and length history for the baseline
+│   │                               DroneEnv (coordinate observations).
+│   ├── metrics_advanced_ppo.json   Rolling 200-episode history for PPO on
+│   │                               DroneEnvAdvanced: episode counts, rewards,
+│   │                               lengths, success flags.
+│   ├── metrics_advanced_sac.json   Same format as above for SAC.
+│   ├── metrics_lidar.json          Episode history for the LIDAR baseline.
+│   ├── hpo_results_ppo.json        Optuna study results for PPO: all 20 trial
+│   │                               hyperparameter configurations and their objective
+│   │                               values, plus the best trial summary.
+│   ├── hpo_results_sac.json        Same format for SAC hyperparameter optimization.
+│   ├── multi_algo_results.json     PPO vs SAC comparison: raw per-seed reward arrays,
+│   │                               summary statistics (mean, std, success rate),
+│   │                               Mann-Whitney U p-value, and winning algorithm.
+│   └── mission_log.jsonl           Append-only JSONL log of every NL mission submitted
+│                                   through the MissionPlanner: raw text, parsed spec,
+│                                   difficulty score, and timestamp.
+│
+│
+├── templates/                      FLASK HTML TEMPLATES
+│   └── dashboard.html              Main dashboard page template (rendered by the `/`
+│                                   route). Contains the canvas simulation viewer,
+│                                   sensor suite, curriculum card, mission planner,
+│                                   XAI panel, and benchmark table.
+│
+│
+├── static/                         STATIC WEB ASSETS
+│   ├── css/
+│   │   └── dashboard.css           Stylesheet for the dashboard UI.
+│   └── js/
+│       └── dashboard.js            Frontend JavaScript: SSE connection management,
+│                                   Chart.js reward curves, canvas rendering,
+│                                   LIDAR polar plot, polling for /state and
+│                                   /curriculum/state, form submission for /plan
+│                                   and /xai/importance.
+│
+│
+└── venv/                           Python virtual environment (excluded from git).
+                                    Install dependencies here with pip install -r
+                                    requirements.txt before running any command.
